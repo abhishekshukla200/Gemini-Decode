@@ -10,6 +10,7 @@ load_dotenv()
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 8 * 1024 * 1024
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
 
 
 PAGE_TEMPLATE = """
@@ -212,7 +213,7 @@ def get_gemini_response(system_prompt, image, user_prompt):
         raise RuntimeError("GOOGLE_API_KEY is not configured in Vercel environment variables.")
 
     genai.configure(api_key=api_key)
-    model = genai.GenerativeModel("gemini-1.5-flash")
+    model = genai.GenerativeModel(GEMINI_MODEL)
     response = model.generate_content([system_prompt, image, user_prompt])
     return response.text
 
