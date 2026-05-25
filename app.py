@@ -9,7 +9,15 @@ import google.generativeai as genai
 load_dotenv()
 
 app = Flask(__name__)
-app.config["MAX_CONTENT_LENGTH"] = 8 * 1024 * 1024
+MAX_UPLOAD_BYTES = 4 * 1024 * 1024
+IMAGE_PREVIEW_BYTES = 1 * 1024 * 1024
+SUPPORTED_MIME_TYPES = {
+    "image/jpeg",
+    "image/png",
+    "application/pdf",
+}
+
+app.config["MAX_CONTENT_LENGTH"] = MAX_UPLOAD_BYTES
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
 
 
@@ -135,6 +143,13 @@ PAGE_TEMPLATE = """
         margin-bottom: 18px;
       }
 
+      .hint {
+        margin: 8px 0 0;
+        color: var(--muted);
+        font-size: 0.95rem;
+        line-height: 1.5;
+      }
+
       .result {
         overflow: hidden;
       }
@@ -146,6 +161,22 @@ PAGE_TEMPLATE = """
         object-fit: contain;
         background: #f5f2ea;
         border-bottom: 1px solid var(--line);
+      }
+
+      .file-preview {
+        padding: 22px;
+        background: #f5f2ea;
+        border-bottom: 1px solid var(--line);
+      }
+
+      .file-preview strong,
+      .file-preview span {
+        display: block;
+      }
+
+      .file-preview span {
+        margin-top: 6px;
+        color: var(--muted);
       }
 
       .answer {
@@ -174,14 +205,15 @@ PAGE_TEMPLATE = """
     <main>
       <h1>GeminiDecode</h1>
       <p class="intro">
-        Extract useful answers from multilingual document images with Gemini.
+        Extract useful answers from multilingual document images and PDFs with Gemini.
       </p>
 
       <section class="workspace">
         <form method="post" enctype="multipart/form-data">
           <div class="field">
-            <label for="document">Document image</label>
-            <input id="document" name="document" type="file" accept="image/png,image/jpeg" required>
+            <label for="document">Document image or PDF</label>
+            <input id="document" name="document" type="file" accept="image/png,image/jpeg,application/pdf" required>
+            <p class="hint">Use JPG, PNG, or PDF files up to 4 MB on Vercel.</p>
           </div>
 
           <div class="field">
@@ -196,6 +228,11 @@ PAGE_TEMPLATE = """
           <aside class="result">
             {% if image_data %}
               <img src="{{ image_data }}" alt="Uploaded document preview">
+            {% elif file_name %}
+              <div class="file-preview">
+                <strong>{{ file_name }}</strong>
+                <span>{{ file_type }}</span>
+              </div>
             {% endif %}
             <div class="answer {% if error %}notice{% endif %}">{{ error or answer }}</div>
           </aside>
@@ -207,14 +244,14 @@ PAGE_TEMPLATE = """
 """
 
 
-def get_gemini_response(system_prompt, image, user_prompt):
+def get_gemini_response(system_prompt, document, user_prompt):
     api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
     if not api_key:
         raise RuntimeError("GEMINI_API_KEY is not configured in Vercel environment variables.")
 
     genai.configure(api_key=api_key)
     model = genai.GenerativeModel(GEMINI_MODEL)
-    response = model.generate_content([system_prompt, image, user_prompt])
+    response = model.generate_content([system_prompt, document, user_prompt])
     return response.text
 
 
@@ -238,11 +275,27 @@ def format_gemini_error(exc):
     return "Gemini could not process this request. Please check the API key, model, and quota."
 
 
+def detect_mime_type(uploaded_file):
+    mime_type = uploaded_file.mimetype or ""
+    filename = uploaded_file.filename.lower()
+
+    if filename.endswith(".pdf"):
+        return "application/pdf"
+    if filename.endswith((".jpg", ".jpeg")):
+        return "image/jpeg"
+    if filename.endswith(".png"):
+        return "image/png"
+
+    return mime_type
+
+
 @app.route("/", methods=["GET", "POST"])
 def index():
     answer = None
     error = None
     image_data = None
+    file_name = None
+    file_type = None
     question = ""
 
     if request.method == "POST":
@@ -250,31 +303,44 @@ def index():
         question = request.form.get("question", "").strip()
 
         if not uploaded_file or not uploaded_file.filename:
-            error = "Please upload an image first."
+            error = "Please upload a document image or PDF first."
         elif not question:
             error = "Please enter a question about the document."
         else:
+            mime_type = detect_mime_type(uploaded_file)
             image_bytes = uploaded_file.read()
-            image = {
-                "mime_type": uploaded_file.mimetype,
-                "data": image_bytes,
-            }
-            encoded_image = base64.b64encode(image_bytes).decode("utf-8")
-            image_data = f"data:{uploaded_file.mimetype};base64,{encoded_image}"
 
-            try:
-                answer = get_gemini_response(
-                    "You are an expert document analyst. Analyze this image and answer the question accordingly.",
-                    image,
-                    question,
-                )
-            except Exception as exc:
-                error = format_gemini_error(exc)
+            if mime_type not in SUPPORTED_MIME_TYPES:
+                error = "Please upload a JPG, PNG, or PDF file."
+            elif not image_bytes:
+                error = "The uploaded file is empty."
+            else:
+                document = {
+                    "mime_type": mime_type,
+                    "data": image_bytes,
+                }
+                file_name = uploaded_file.filename
+                file_type = "PDF document" if mime_type == "application/pdf" else "Image document"
+
+                if mime_type.startswith("image/") and len(image_bytes) <= IMAGE_PREVIEW_BYTES:
+                    encoded_image = base64.b64encode(image_bytes).decode("utf-8")
+                    image_data = f"data:{mime_type};base64,{encoded_image}"
+
+                try:
+                    answer = get_gemini_response(
+                        "You are an expert document analyst. Analyze this document and answer the question accordingly.",
+                        document,
+                        question,
+                    )
+                except Exception as exc:
+                    error = format_gemini_error(exc)
 
     return render_template_string(
         PAGE_TEMPLATE,
         answer=answer,
         error=error,
         image_data=image_data,
+        file_name=file_name,
+        file_type=file_type,
         question=question,
     )
