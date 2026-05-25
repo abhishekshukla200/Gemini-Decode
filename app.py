@@ -208,14 +208,34 @@ PAGE_TEMPLATE = """
 
 
 def get_gemini_response(system_prompt, image, user_prompt):
-    api_key = os.getenv("GOOGLE_API_KEY")
+    api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
     if not api_key:
-        raise RuntimeError("GOOGLE_API_KEY is not configured in Vercel environment variables.")
+        raise RuntimeError("GEMINI_API_KEY is not configured in Vercel environment variables.")
 
     genai.configure(api_key=api_key)
     model = genai.GenerativeModel(GEMINI_MODEL)
     response = model.generate_content([system_prompt, image, user_prompt])
     return response.text
+
+
+def format_gemini_error(exc):
+    message = str(exc)
+    lower_message = message.lower()
+
+    if "api key was reported as leaked" in lower_message:
+        return (
+            "This Gemini API key has been blocked because Google detected it as leaked. "
+            "Create a new key in Google AI Studio, add it to Vercel as GEMINI_API_KEY, "
+            "remove the old leaked key, and redeploy."
+        )
+
+    if "api key not valid" in lower_message or "permission_denied" in lower_message:
+        return (
+            "The Gemini API key is invalid or does not have access. "
+            "Check the GEMINI_API_KEY value in Vercel and redeploy."
+        )
+
+    return "Gemini could not process this request. Please check the API key, model, and quota."
 
 
 @app.route("/", methods=["GET", "POST"])
@@ -249,7 +269,7 @@ def index():
                     question,
                 )
             except Exception as exc:
-                error = str(exc)
+                error = format_gemini_error(exc)
 
     return render_template_string(
         PAGE_TEMPLATE,
